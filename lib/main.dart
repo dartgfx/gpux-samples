@@ -27,8 +27,9 @@ class Demo extends StatefulWidget {
 }
 
 class _DemoState extends State<Demo> with SingleTickerProviderStateMixin {
+  GpuController? _gpu;
   Renderer? _renderer;
-  bool _loading = false;
+  Object? _gpuError;
   late final AnimationController _loop;
 
   @override
@@ -38,10 +39,27 @@ class _DemoState extends State<Demo> with SingleTickerProviderStateMixin {
       vsync: this,
       duration: const Duration(seconds: 1),
     )..repeat();
+    _initGpu();
+  }
+
+  Future<void> _initGpu() async {
+    final gpu = GpuController();
+    try {
+      await gpu.initialize();
+      if (!mounted) {
+        gpu.dispose();
+        return;
+      }
+      setState(() => _gpu = gpu);
+      await _initScene(gpu.device);
+    } catch (error) {
+      gpu.dispose();
+      if (!mounted) return;
+      setState(() => _gpuError = error);
+    }
   }
 
   Future<void> _initScene(GpuDevice device) async {
-    _loading = true;
     final meshes = await _loadGlb('assets/models/DamagedHelmet.glb', device);
     if (!mounted) return;
     final r = Renderer(repaint: _loop);
@@ -56,25 +74,27 @@ class _DemoState extends State<Demo> with SingleTickerProviderStateMixin {
   void dispose() {
     _loop.dispose();
     _renderer?.dispose();
+    _gpu?.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => DefaultGpu(
-    child: Scaffold(
-      backgroundColor: Colors.black,
-      body: Builder(
-        builder: (ctx) {
-          if (_renderer == null && !_loading) {
-            final c = DefaultGpu.maybeOf(ctx);
-            if (c != null && c.isInitialized) _initScene(c.device);
-          }
-          return _renderer != null
-              ? GpuView(renderer: _renderer!)
-              : const Center(child: CircularProgressIndicator());
-        },
-      ),
-    ),
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: Colors.black,
+    body: _gpuError != null
+        ? Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                'GPU initialization failed:\n$_gpuError',
+                style: const TextStyle(color: Colors.white),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          )
+        : _renderer != null
+        ? GpuView(controller: _gpu, renderer: _renderer!)
+        : const Center(child: CircularProgressIndicator()),
   );
 }
 
@@ -309,7 +329,7 @@ Future<List<MeshData>> _loadGlb(String asset, GpuDevice device) async {
   for (var i = 0; i < doc.images.items.length; i++) {
     final bytes = doc.imageData[ImageIdx(i)];
     if (bytes == null) continue;
-    final codec = await ui.instantiateImageCodec(bytes);
+    final codec = await ui.instantiateImageCodec(Uint8List.fromList(bytes));
     final frame = await codec.getNextFrame();
     final img = frame.image;
     final bd = await img.toByteData(format: ui.ImageByteFormat.rawStraightRgba);
